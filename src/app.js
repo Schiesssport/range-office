@@ -440,6 +440,10 @@ class Scorecards {
         { kind: 'matchTitle',         type: 'text'    },
         { kind: 'eventName',          type: 'text'    },
         { kind: 'eventLogo',          type: 'image'   },
+        { kind: 'participantCustom1', type: 'text'    },
+        { kind: 'participantCustom2', type: 'text'    },
+        { kind: 'freeText1',          type: 'text', hasOwnText: true },
+        { kind: 'freeText2',          type: 'text', hasOwnText: true },
     ];
 
     static activeKey        = null;
@@ -475,16 +479,26 @@ class Scorecards {
     // sheet, mirrored into a second 35 mm column via the field pair (split,
     // tear-off paper). Adjust freely per scorecard once created.
     static defaultFields() {
-        const pair = () => ({ enabled: true, horizontalOffsetMm: 35, verticalOffsetMm: 0 });
+        const pair = (enabled) => ({ enabled, horizontalOffsetMm: 35, verticalOffsetMm: 0 });
         return {
-            participantBarcode: { enabled: true, fromLeftMm: 3, fromTopMm: 118, widthMm: 30, heightMm: 15, pair: pair() },
-            matchBarcode:       { enabled: true, fromLeftMm: 3, fromTopMm: 135, widthMm: 30, heightMm: 15, pair: pair() },
-            participantName:    { enabled: true, fromLeftMm: 3, fromTopMm: 154, widthMm: 30, heightMm: 5, fontPt: 9, pair: pair() },
-            participantYob:     { enabled: true, fromLeftMm: 3, fromTopMm: 160, widthMm: 30, heightMm: 4, fontPt: 8, pair: pair() },
-            matchTitle:         { enabled: true, fromLeftMm: 3, fromTopMm: 166, widthMm: 30, heightMm: 4, fontPt: 8, pair: pair() },
-            eventName:          { enabled: true, fromLeftMm: 3, fromTopMm: 172, widthMm: 30, heightMm: 4, fontPt: 7, pair: pair() },
-            eventLogo:          { enabled: true, fromLeftMm: 3, fromTopMm: 178, widthMm: 30, heightMm: 14, pair: pair() },
+            participantBarcode: { enabled: true,  fromLeftMm: 3,  fromTopMm: 128, widthMm: 30, heightMm: 15, pair: pair(false) },
+            matchBarcode:       { enabled: true,  fromLeftMm: 3,  fromTopMm: 142, widthMm: 30, heightMm: 15, pair: pair(false) },
+            participantName:    { enabled: true,  fromLeftMm: 3,  fromTopMm: 158, widthMm: 30, heightMm: 10, fontPt: 8, pair: pair(true) },
+            participantYob:     { enabled: true,  fromLeftMm: 22,  fromTopMm: 165, widthMm: 11, heightMm: 4,  fontPt: 8, pair: pair(true) },
+            matchTitle:         { enabled: true,  fromLeftMm: 3,  fromTopMm: 169, widthMm: 30, heightMm: 4,  fontPt: 6, pair: pair(true) },
+            eventName:          { enabled: true,  fromLeftMm: 3,  fromTopMm: 172, widthMm: 30, heightMm: 4,  fontPt: 6, pair: pair(true) },
+            eventLogo:          { enabled: true,  fromLeftMm: 3,  fromTopMm: 178, widthMm: 30, heightMm: 14, pair: pair(true) },
+            participantCustom1: { enabled: false, fromLeftMm: 3,  fromTopMm: 112, widthMm: 30, heightMm: 4,  fontPt: 8, pair: pair(true) },
+            participantCustom2: { enabled: false, fromLeftMm: 3,  fromTopMm: 108, widthMm: 30, heightMm: 4,  fontPt: 8, pair: pair(true) },
+            freeText1:          { enabled: true,  fromLeftMm: 38, fromTopMm: 150, widthMm: 30, heightMm: 5,  fontPt: 7, text: Translations.t('scorecard.copyText'), pair: pair(false) },
+            freeText2:          { enabled: false, fromLeftMm: 3,  fromTopMm: 112, widthMm: 30, heightMm: 5,  fontPt: 9, text: '', pair: pair(false) },
         };
+    }
+
+    static fieldLabel(kind) {
+        if (kind === 'participantCustom1') return Settings.get('customColumn1Name').trim() || Translations.t('settings.customColumn1');
+        if (kind === 'participantCustom2') return Settings.get('customColumn2Name').trim() || Translations.t('settings.customColumn2');
+        return Translations.t('scorecard.field.' + kind);
     }
 
     // Merges a stored field over the default shape so a partial or hand-edited
@@ -553,6 +567,7 @@ class Scorecards {
     static rename(key, name) {
         Scorecards.mutate(key, scorecard => { scorecard.name = name; });
         Matches.renderSettings();
+        Scorecards.refreshSettingsTitle();
     }
 
     static NON_NEGATIVE_FIELD_PROPS = new Set(['widthMm', 'heightMm', 'fontPt']);
@@ -562,25 +577,38 @@ class Scorecards {
         Scorecards.renderPreview();
     }
 
+    // Scorecards saved before a field kind existed have no entry for it, so every
+    // write goes through the merged default shape first.
+    static writableField(scorecard, kind) {
+        if (!scorecard.fields) scorecard.fields = {};
+        scorecard.fields[kind] = Scorecards.fieldOf(scorecard, kind);
+        return scorecard.fields[kind];
+    }
+
     static setFieldEnabled(key, kind, enabled) {
-        Scorecards.mutate(key, scorecard => { scorecard.fields[kind].enabled = enabled; });
+        Scorecards.mutate(key, scorecard => { Scorecards.writableField(scorecard, kind).enabled = enabled; });
         Scorecards.renderPreview();
     }
 
     static setFieldNumber(key, kind, property, value) {
         const number = Number(value) || 0;
         const clamped = Scorecards.NON_NEGATIVE_FIELD_PROPS.has(property) ? Math.max(0, number) : number;
-        Scorecards.mutate(key, scorecard => { scorecard.fields[kind][property] = clamped; });
+        Scorecards.mutate(key, scorecard => { Scorecards.writableField(scorecard, kind)[property] = clamped; });
+        Scorecards.renderPreview();
+    }
+
+    static setFieldText(key, kind, text) {
+        Scorecards.mutate(key, scorecard => { Scorecards.writableField(scorecard, kind).text = text; });
         Scorecards.renderPreview();
     }
 
     static setPairEnabled(key, kind, enabled) {
-        Scorecards.mutate(key, scorecard => { scorecard.fields[kind].pair.enabled = enabled; });
+        Scorecards.mutate(key, scorecard => { Scorecards.writableField(scorecard, kind).pair.enabled = enabled; });
         Scorecards.renderPreview();
     }
 
     static setPairOffset(key, kind, property, value) {
-        Scorecards.mutate(key, scorecard => { scorecard.fields[kind].pair[property] = Number(value) || 0; });
+        Scorecards.mutate(key, scorecard => { Scorecards.writableField(scorecard, kind).pair[property] = Number(value) || 0; });
         Scorecards.renderPreview();
     }
 
@@ -707,7 +735,7 @@ class Scorecards {
         Scorecards.FIELDS.forEach(({ kind, type }) => {
             const field = Scorecards.fieldOf(scorecard, kind);
             if (!field.enabled) return;
-            const value = Scorecards.fieldValue(kind, participant, match);
+            const value = Scorecards.fieldValue(kind, participant, match, field);
             if (!value) return;
             ScorecardLayout.fieldPlacements(field).forEach(placement => {
                 sheet.appendChild(Scorecards.buildFieldElement(type, field, value, placement));
@@ -716,7 +744,7 @@ class Scorecards {
         return sheet;
     }
 
-    static fieldValue(kind, participant, match) {
+    static fieldValue(kind, participant, match, field) {
         switch (kind) {
             case 'participantBarcode': {
                 const code = Barcodes.participantCode((participant.license || '').trim());
@@ -735,6 +763,10 @@ class Scorecards {
             case 'matchTitle':      return match.title || match.label || null;
             case 'eventName':       return Settings.get('eventName') || null;
             case 'eventLogo':       return Settings.getRaw('eventLogo') || null;
+            case 'participantCustom1': return (participant.custom1 || '').trim() || null;
+            case 'participantCustom2': return (participant.custom2 || '').trim() || null;
+            case 'freeText1':
+            case 'freeText2':       return (field?.text || '').trim() || null;
             default:                return null;
         }
     }
@@ -775,6 +807,15 @@ class Scorecards {
         return matches.find(match => match.scorecardKey === scorecard.key) || matches[0] || null;
     }
 
+    // Same print path as a real score sheet, fed with the preview sample data —
+    // the browser dialog then offers full-size print or "save as PDF".
+    static printPreview() {
+        const scorecard = Scorecards.getActive();
+        if (!scorecard) return;
+        const match = { ...(Scorecards.previewMatch(scorecard) || {}), scorecardKey: scorecard.key };
+        Printing.run([{ participant: Scorecards.previewParticipant(), match }]);
+    }
+
     static async renderPreview() {
         const wrap = $('scorecard-preview');
         if (!wrap) return;
@@ -808,7 +849,15 @@ class Scorecards {
         Scorecards.activeKey = active?.key ?? null;
         listBody.innerHTML = all.map(scorecard => Scorecards.listRowHtml(scorecard, active, all.length)).join('');
         editor.innerHTML = active ? Scorecards.editorHtml(active) : '';
+        Scorecards.refreshSettingsTitle();
         Scorecards.renderPreview();
+    }
+
+    static refreshSettingsTitle() {
+        const title = $('scorecard-settings-title');
+        if (!title) return;
+        const active = Scorecards.getActive();
+        title.textContent = active ? Translations.t('scorecard.settingsTitle', { name: active.name }) : '';
     }
 
     static listRowHtml(scorecard, active, count) {
@@ -826,14 +875,18 @@ class Scorecards {
         const t = (key) => Escape.escapeHtml(Translations.t(key));
         const numberCell = (kind, property, value, min) =>
             `<input type="number" step="any"${min === undefined ? '' : ` min="${min}"`} class="scorecard-num" value="${value}" oninput="Scorecards.setFieldNumber('${scorecard.key}','${kind}','${property}',this.value)">`;
-        const fieldRows = Scorecards.FIELDS.map(({ kind, type }) => {
+        const fieldRows = Scorecards.FIELDS.map(({ kind, type, hasOwnText }) => {
             const field = Scorecards.fieldOf(scorecard, kind);
             const fontCell = type === 'text'
                 ? `<input type="number" step="any" min="0" class="scorecard-num" value="${field.fontPt || 10}" oninput="Scorecards.setFieldNumber('${scorecard.key}','${kind}','fontPt',this.value)">`
                 : '';
+            const label = Escape.escapeHtml(Scorecards.fieldLabel(kind));
+            const nameCell = hasOwnText
+                ? `<input type="text" class="scorecard-text" value="${Escape.escapeHtml(field.text || '')}" placeholder="${label}" aria-label="${label}" oninput="Scorecards.setFieldText('${scorecard.key}','${kind}',this.value)">`
+                : label;
             return `
                 <tr>
-                    <td>${t('scorecard.field.' + kind)}</td>
+                    <td>${nameCell}</td>
                     <td><input type="checkbox" ${field.enabled ? 'checked' : ''} onchange="Scorecards.setFieldEnabled('${scorecard.key}','${kind}',this.checked)"></td>
                     <td>${numberCell(kind, 'fromLeftMm', field.fromLeftMm)}</td>
                     <td>${numberCell(kind, 'fromTopMm', field.fromTopMm)}</td>
@@ -845,19 +898,16 @@ class Scorecards {
                     <td><input type="number" step="any" class="scorecard-num" value="${field.pair.verticalOffsetMm}" oninput="Scorecards.setPairOffset('${scorecard.key}','${kind}','verticalOffsetMm',this.value)"></td>
                 </tr>`;
         }).join('');
-        const removeBackdrop = scorecard.pdfDataUrl
-            ? `<button type="button" class="btn-danger-ghost" onclick="Scorecards.clearPdf('${scorecard.key}')">${t('scorecard.removeBackdrop')}</button>`
-            : '';
-        const backdropStatus = scorecard.pdfDataUrl ? t('scorecard.backdropLoaded') : t('scorecard.backdropNone');
+        const backdropControl = scorecard.pdfDataUrl
+            ? `<span class="license-db-status">${t('scorecard.backdropLoaded')}</span>
+               <button type="button" class="btn-danger-ghost" onclick="Scorecards.clearPdf('${scorecard.key}')">${t('scorecard.removeBackdrop')}</button>`
+            : `<input type="file" class="scorecard-pdf-input" accept="application/pdf" onchange="Scorecards.uploadPdf('${scorecard.key}',this)">
+               <span class="license-db-status">${t('scorecard.backdropNone')}</span>`;
         return `
             <div class="scorecard-editor-head">
                 <div class="scorecard-backdrop-control">
                     <label>${t('scorecard.backdrop')}</label>
-                    <div class="license-db-row">
-                        <input type="file" accept="application/pdf" onchange="Scorecards.uploadPdf('${scorecard.key}',this)">
-                        ${removeBackdrop}
-                        <span class="license-db-status">${backdropStatus}</span>
-                    </div>
+                    <div class="license-db-row scorecard-backdrop-row">${backdropControl}</div>
                     <p class="settings-section-description">${t('scorecard.backdropHint')}</p>
                 </div>
                 <div class="scorecard-page-control">
@@ -870,6 +920,7 @@ class Scorecards {
                     </div>
                 </div>
             </div>
+            <div class="table-scroll-x">
             <table class="scorecard-fields-table">
                 <thead>
                     <tr>
@@ -886,7 +937,8 @@ class Scorecards {
                     </tr>
                 </thead>
                 <tbody>${fieldRows}</tbody>
-            </table>`;
+            </table>
+            </div>`;
     }
 }
 
@@ -1326,9 +1378,9 @@ class Filter {
 
 class Toolbar {
     static BUTTONS = [
-        { id: 'btn-toolbar-download', verbKey: 'verb.download' },
-        { id: 'btn-toolbar-copy',     verbKey: 'verb.copy'     },
-        { id: 'btn-toolbar-delete',   verbKey: 'verb.delete'   },
+        { id: 'btn-toolbar-download', verbKey: 'verb.download', icon: '⤓' },
+        { id: 'btn-toolbar-copy',     verbKey: 'verb.copy',     icon: '⧉' },
+        { id: 'btn-toolbar-delete',   verbKey: 'verb.delete',   icon: '🗑' },
     ];
 
     static renderPrintGroup() {
@@ -1355,9 +1407,11 @@ class Toolbar {
     static updateLabels() {
         const selected = Selection.getSelectedRows();
         const count = selected.length > 0 ? String(selected.length) : Translations.t('count.all');
-        Toolbar.BUTTONS.forEach(({ id, verbKey }) => {
+        Toolbar.BUTTONS.forEach(({ id, verbKey, icon }) => {
             const btn = $(id);
-            if (btn) btn.innerHTML = `<span class="btn-count">${Escape.escapeHtml(count)}</span> ${Escape.escapeHtml(Translations.t(verbKey))}`;
+            if (!btn) return;
+            btn.innerHTML = `<span class="toolbar-btn-icon" aria-hidden="true">${icon}</span>`
+                + `<span class="btn-count">${Escape.escapeHtml(count)}</span> ${Escape.escapeHtml(Translations.t(verbKey))}`;
         });
         Toolbar.updateMaster();
     }

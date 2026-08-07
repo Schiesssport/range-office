@@ -183,6 +183,12 @@ button:focus-visible {
 
 .toolbar-btn { padding: 0 16px; }
 
+.toolbar-btn-icon {
+    margin-right: 8px;
+    font-size: 15px;
+    line-height: 1;
+}
+
 .filter-input {
     margin-left: auto;
     width: 240px;
@@ -719,7 +725,30 @@ tr.row-paid input[readonly] { color: var(--muted); cursor: default; }
 
 /* -- Scorecard editor ------------------------------------------------------- */
 
-.scorecard-editor { margin-top: 16px; }
+.scorecard-settings-card {
+    margin-top: 20px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+}
+.scorecard-settings-title {
+    margin: 0 0 12px;
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: var(--muted);
+}
+.scorecard-settings-split {
+    display: grid;
+    grid-template-columns: 2fr 1fr;
+    gap: 20px;
+    align-items: start;
+}
+@media (max-width: 900px) {
+    .scorecard-settings-split { grid-template-columns: 1fr; }
+}
+
+.scorecard-editor { min-width: 0; }
 .scorecard-editor:empty { display: none; }
 
 .scorecard-editor-head {
@@ -728,6 +757,11 @@ tr.row-paid input[readonly] { color: var(--muted); cursor: default; }
     gap: 24px;
     margin-bottom: 16px;
 }
+.scorecard-backdrop-control { flex: 2 1 320px; min-width: 0; }
+.scorecard-page-control { flex: 1 1 160px; min-width: 0; }
+.scorecard-backdrop-row { gap: 8px; }
+.scorecard-pdf-input { width: auto; max-width: 100%; padding: 5px 8px; font-size: 12px; }
+.scorecard-backdrop-control .settings-section-description { margin: 8px 0 0; }
 .scorecard-page-inputs { display: flex; align-items: center; gap: 8px; }
 .scorecard-page-inputs .scorecard-num { width: 80px; }
 
@@ -752,10 +786,12 @@ tr.row-paid input[readonly] { color: var(--muted); cursor: default; }
     border-bottom: 1px solid var(--border);
 }
 .scorecard-num { width: 68px; padding: 6px 8px; }
+.scorecard-text { width: 110px; padding: 6px 8px; }
 
 /* -- Scorecard preview ------------------------------------------------------ */
 
-.scorecard-preview-panel { margin-top: 20px; }
+.scorecard-preview-panel { min-width: 0; }
+.scorecard-preview-print { margin-top: 10px; width: 100%; }
 .scorecard-preview {
     margin-top: 6px;
     border: 1px solid var(--border);

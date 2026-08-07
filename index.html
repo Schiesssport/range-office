@@ -99,10 +99,16 @@
             <div class="license-db-row config-add-row">
                 <button class="btn-neutral" onclick="Scorecards.add()" data-i18n="btn.addScorecard">Add scorecard</button>
             </div>
-            <div id="scorecard-editor" class="scorecard-editor"></div>
-            <div class="scorecard-preview-panel">
-                <label data-i18n="scorecard.preview">Preview</label>
-                <div id="scorecard-preview" class="scorecard-preview"></div>
+            <div class="scorecard-settings-card">
+                <h4 id="scorecard-settings-title" class="scorecard-settings-title"></h4>
+                <div class="scorecard-settings-split">
+                    <div id="scorecard-editor" class="scorecard-editor"></div>
+                    <div class="scorecard-preview-panel">
+                        <label data-i18n="scorecard.preview">Preview</label>
+                        <div id="scorecard-preview" class="scorecard-preview"></div>
+                        <button type="button" class="btn-neutral scorecard-preview-print" onclick="Scorecards.printPreview()" data-i18n="btn.printPreview">Print preview</button>
+                    </div>
+                </div>
             </div>
         </section>
     </div>
