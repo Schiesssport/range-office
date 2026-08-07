@@ -36,8 +36,11 @@ Built as a single-page PWA with no build step and no external runtime dependenci
 - **Matches & score-sheet printing**
   - Up to five configurable matches ("Stiche"); each participant registers for the matches they've entered, toggled per row
   - One printed sheet per registered (participant × match); a Code128 participant barcode and match barcode, each with a `mod-97` checksum
-  - Configurable **scorecards** (print templates): place participant/match barcodes, participant name, match title, event name and logo in millimetres, over an optional PDF backdrop (created in Word, exported to PDF, ≤1 MB); prints on white when no PDF is set
+  - Per-match price; a participant's sheets only print once the payment is confirmed (confirming locks the row, reverting unlocks it)
+  - Configurable **scorecards** (print templates): place participant/match barcodes, participant name, year/category, match title, event name, logo, the two custom columns and two free-text fields in millimetres, over an optional PDF backdrop (created in Word, exported to PDF, ≤1 MB); prints on white when no PDF is set
+  - Free-text fields carry their own content (one defaults to "Doppel" / "Copie") — useful for labelling the tear-off half
   - Optional paired copy of each field at a horizontal/vertical offset (for split, tear-off paper)
+  - "Vorschau drucken" sends the sample sheet through the real print path, for a full-size check or a PDF export
   - Toolbar prints per match or all matches (grouped by participant) for the selection; `Ctrl/Cmd+P` prints the focused participant's registered matches
   - Black & white friendly: no colour in category indicators
 - **i18n**: German (default) and French, switchable at runtime
@@ -82,7 +85,7 @@ Three top-level `localStorage` keys, each a JSON-encoded versioned wrapper:
 | Key | Shape |
 |---|---|
 | `settings`     | `{ version, data: { eventName, eventLogo, participantPrefix, licenseEnabled, customColumn1Name, customColumn2Name, matches: [...], scorecards: [...] } }` |
-| `participants` | `{ version, items: [ {license, lastName, firstName, yearOfBirth, custom1, custom2, registeredMatches: [matchKey, ...]}, ... ] }` |
+| `participants` | `{ version, items: [ {license, lastName, firstName, yearOfBirth, custom1, custom2, paid, registeredMatches: [matchKey, ...]}, ... ] }` |
 | `userSettings` | `{ language, updateDeferUntil }` — local user preferences, **not** part of an event export |
 
 The exported `.openrangeoffice` file mirrors `settings` + `participants` exactly. Section versions are `Major.Minor`; an incompatible major aborts the import (a registry-based migration framework is in place for future major bumps).

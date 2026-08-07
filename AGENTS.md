@@ -10,7 +10,7 @@ These are non-negotiable. They override any other guidance in this document.
 
 ## What OpenRangeOffice does
 
-OpenRangeOffice is a small offline-first PWA for managing participants and printing barcoded score sheets ("Standblätter") at Swiss shooting events. Single-page, no build step; the only runtime dependencies are the vendored `JsBarcode.all.min.js` and `pdf.min.js` (+ its worker, used to rasterize an optional PDF scorecard backdrop). UI is German or French. All state lives in `localStorage`. See `README.md` for full details.
+OpenRangeOffice is a small offline-first PWA for managing participants and printing barcoded score sheets ("Standblätter") at Swiss shooting events. Single-page, no build step; the only runtime dependencies are the vendored `JsBarcode.all.min.js` and `pdf.min.js` (+ its worker, used to rasterize an optional PDF scorecard backdrop). UI is German or French. All state lives in `localStorage`. `README.md` is the user- and contributor-facing description of the same app — it is a living document too, and every change that adds, removes, or reshapes a user-visible feature or the storage shape must update it in the same turn.
 
 ## Code philosophy
 
@@ -66,8 +66,8 @@ Imported `.openrangeoffice` files are version-checked per section. Mismatched ma
 
 `localStorage` mirrors the export envelope so the two are interchangeable. Three top-level keys, each a JSON-encoded string:
 
-- `settings` — `{ version: "2.0", data: { eventName, participantPrefix, licenseEnabled, customColumn1Name, customColumn2Name, eventLogo, matches: [...], scorecards: [...] } }`. `matches`/`scorecards` are variable-length arrays managed by the `Matches`/`Scorecards` classes via `Settings.getRaw`/`setRaw` (they do **not** fit the flat `Settings.BINDINGS` schema). A match is `{ key (uuid7), label (≤2 chars), title, codePrefix, matchCode, targetCode, scorecardKey }`; a scorecard is `{ key, name, pdfDataUrl, pageWidthMm, pageHeightMm, fields }` where each field is `{ enabled, fromLeftMm, fromTopMm, widthMm, heightMm, fontPt?, pair: { enabled, horizontalOffsetMm, verticalOffsetMm } }`. At least one match and one scorecard always exist.
-- `participants` — `{ version: "2.0", items: [ {license, lastName, firstName, yearOfBirth, custom1, custom2, registeredMatches: [matchKey, ...]}, ... ] }`
+- `settings` — `{ version: "2.0", data: { eventName, participantPrefix, licenseEnabled, customColumn1Name, customColumn2Name, eventLogo, matches: [...], scorecards: [...] } }`. `matches`/`scorecards` are variable-length arrays managed by the `Matches`/`Scorecards` classes via `Settings.getRaw`/`setRaw` (they do **not** fit the flat `Settings.BINDINGS` schema). A match is `{ key (uuid7), label (≤2 chars), title, codePrefix, matchCode, targetCode, price, scorecardKey }`; a scorecard is `{ key, name, pdfDataUrl, pageWidthMm, pageHeightMm, fields }` where each field is `{ enabled, fromLeftMm, fromTopMm, widthMm, heightMm, fontPt?, text? (free-text kinds only), pair: { enabled, horizontalOffsetMm, verticalOffsetMm } }`. Field kinds live in `Scorecards.FIELDS`; writes go through `Scorecards.writableField`, which seeds a kind a stored scorecard doesn't have yet from `defaultFields()`. At least one match and one scorecard always exist.
+- `participants` — `{ version: "2.0", items: [ {license, lastName, firstName, yearOfBirth, custom1, custom2, paid, registeredMatches: [matchKey, ...]}, ... ] }`
 - `userSettings` — `{ language: "de", updateDeferUntil: 0 }` — local-only user prefs, **not** exported (free-form bag, extend via `UserSettings.patch`)
 
 The optional **SSV license roster** lives in IndexedDB (`openrangeoffice-licenses` / store `licenses`, keyed by `normalizeLicense(...)` from `src/core/licenses.js`) — deliberately *outside* the event envelope so a 10MB roster never bloats `.openrangeoffice` exports. Managed entirely by the `LicenseDb` class; `Backup.clearAll` does not touch it.
@@ -132,10 +132,11 @@ You are read-only on git. Never run `git add`, `git commit`, `git push`, `git re
 After every tasked change:
 
 1. Run `node --check <file>.js` for any file you touched, and `npm run test`.
-2. List each changed file with a one-line summary of what changed and why.
-3. Flag areas that warrant close review — complex logic, security-sensitive paths, side-effects on storage or migrations.
-4. Ask for feedback before proceeding to the next task.
-5. Suggest a short plain commit message for the pending `git status`. No prefixes, tags, or brackets — the branch name communicates the type; the message explains what changed.
+2. Update `README.md` and `AGENTS.md` if the change touched a user-visible feature, the storage shape, the file layout, or a convention.
+3. List each changed file with a one-line summary of what changed and why.
+4. Flag areas that warrant close review — complex logic, security-sensitive paths, side-effects on storage or migrations.
+5. Ask for feedback before proceeding to the next task.
+6. Suggest a short plain commit message for the pending `git status`. No prefixes, tags, or brackets — the branch name communicates the type; the message explains what changed.
 
 ## When you're unsure
 
