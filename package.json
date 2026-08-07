@@ -4,7 +4,11 @@
   "type": "module",
   "scripts": {
     "test": "node --test src/tests/*.test.js",
-    "dev":  "node serve.js",
-    "prod": "STAMP_CACHE=1 node serve.js"
+    "dev": "node serve.js",
+    "prod": "STAMP_CACHE=1 node serve.js",
+    "vendor": "node scripts/vendor-pdfjs.mjs"
+  },
+  "devDependencies": {
+    "pdfjs-dist": "3.11.174"
   }
 }

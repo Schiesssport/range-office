@@ -13,11 +13,11 @@ export const computeChecksum = (digits) => {
     }
 };
 
-export const buildProgramCode = ({ prefix, ranking, target }) => {
-    const r = (ranking || '').trim();
-    const t = (target || '').trim();
+export const buildMatchCode = ({ codePrefix, matchCode, targetCode }) => {
+    const r = (matchCode || '').trim();
+    const t = (targetCode || '').trim();
     if (!r || !t) return null;
-    const p = (prefix || '').padStart(2, '0');
+    const p = (codePrefix || '').padStart(2, '0');
     const base = p + r.padStart(3, '0') + t.padStart(3, '0');
     return base + computeChecksum(base);
 };

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { computeChecksum, buildProgramCode, buildParticipantCode } from '../core/barcodes.js';
+import { computeChecksum, buildMatchCode, buildParticipantCode } from '../core/barcodes.js';
 
 test('computeChecksum returns a 2-digit string', () => {
     const c = computeChecksum('123456');
@@ -23,13 +23,13 @@ test('computeChecksum: appended checksum is divisible by 97 (mod-97 invariant)',
     assert.equal(full % 97n, 0n);
 });
 
-test('buildProgramCode returns null when ranking or target is empty', () => {
-    assert.equal(buildProgramCode({ prefix: '20', ranking: '',    target: '001' }), null);
-    assert.equal(buildProgramCode({ prefix: '20', ranking: '001', target: ''    }), null);
+test('buildMatchCode returns null when matchCode or targetCode is empty', () => {
+    assert.equal(buildMatchCode({ codePrefix: '20', matchCode: '',    targetCode: '001' }), null);
+    assert.equal(buildMatchCode({ codePrefix: '20', matchCode: '001', targetCode: ''    }), null);
 });
 
-test('buildProgramCode pads parts and appends a 2-digit checksum', () => {
-    const code = buildProgramCode({ prefix: '2', ranking: '1', target: '2' });
+test('buildMatchCode pads parts and appends a 2-digit checksum', () => {
+    const code = buildMatchCode({ codePrefix: '2', matchCode: '1', targetCode: '2' });
     assert.equal(code.length, 10);
     assert.equal(code.slice(0, 8), '02001002');
     assert.match(code.slice(8), /^\d{2}$/);

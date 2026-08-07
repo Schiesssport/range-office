@@ -5,16 +5,21 @@
 // `Escape.escapeHtml(...)`, mirroring the class-as-namespace style used below.
 // =============================================================================
 
-import * as Escape       from './core/escape.js';
-import * as I18n         from './core/translations.js';
-import * as Ages         from './core/categories.js';
-import * as BarcodeCodec from './core/barcodes.js';
-import * as Csv          from './core/csv.js';
-import * as Licenses     from './core/licenses.js';
-import * as UpdateTime   from './core/updates.js';
+import * as Escape           from './core/escape.js';
+import * as I18n             from './core/translations.js';
+import * as Ages             from './core/categories.js';
+import * as BarcodeCodec     from './core/barcodes.js';
+import * as Csv              from './core/csv.js';
+import * as Licenses         from './core/licenses.js';
+import * as UpdateTime       from './core/updates.js';
+import * as Ids              from './core/ids.js';
+import * as MatchOrder       from './core/matches.js';
+import * as ScorecardLayout  from './core/scorecards.js';
 
 const $  = (id) => document.getElementById(id);
 const $$ = (selector, ctx = document) => ctx.querySelectorAll(selector);
+
+const newKey = () => Ids.uuid7(Date.now(), crypto.getRandomValues(new Uint8Array(10)));
 
 const triggerDownload = (filename, blob) => {
     const a = document.createElement('a');
@@ -112,6 +117,9 @@ class Translations {
         Translations.apply();
         Participants.refreshDynamicTexts();
         LicenseDb.refreshStatus();
+        Matches.renderSettings();
+        Scorecards.renderSettings();
+        Toolbar.renderPrintGroup();
     }
 }
 
@@ -123,9 +131,6 @@ class Settings {
     static BINDINGS = [
         { storageKey: 'eventName',         elementId: 'event-name-input',         type: 'text',     defaultValue: String(new Date().getFullYear()) },
         { storageKey: 'participantPrefix', elementId: 'participant-prefix-input', type: 'text',     defaultValue: '10' },
-        { storageKey: 'programPrefix',     elementId: 'program-prefix-input',     type: 'text',     defaultValue: '20' },
-        { storageKey: 'rankingCode',       elementId: 'ranking-code-input',       type: 'text',     defaultValue: ''   },
-        { storageKey: 'targetCode',        elementId: 'target-code-input',        type: 'text',     defaultValue: ''   },
         { storageKey: 'licenseEnabled',    elementId: 'license-enabled-input',    type: 'checkbox', defaultValue: true },
         { storageKey: 'customColumn1Name', elementId: 'custom-column-1-input',    type: 'text',     defaultValue: ''   },
         { storageKey: 'customColumn2Name', elementId: 'custom-column-2-input',    type: 'text',     defaultValue: ''   },
@@ -229,10 +234,12 @@ class Logo {
 // -----------------------------------------------------------------------------
 
 class Tabs {
+    static VIEWS = ['data', 'print', 'settings'];
+
     static switch(tab) {
-        $('data-view').classList.toggle('hidden', tab !== 'data');
-        $('settings-view').classList.toggle('hidden', tab !== 'settings');
+        Tabs.VIEWS.forEach(name => $(name + '-view').classList.toggle('hidden', name !== tab));
         $$('.tab-btn').forEach(b => b.classList.toggle('active', b.id === 'tab-' + tab));
+        if (tab === 'print') Scorecards.renderPreview();
     }
 }
 
@@ -275,18 +282,23 @@ class Categories {
 
 class Barcodes {
     static OPTIONS = { width: 2, height: 40, displayValue: true, fontSize: 14, margin: 0 };
+    static cache = new Map();
 
     static render(value) {
+        const cached = Barcodes.cache.get(value);
+        if (cached) return cached;
         const canvas = document.createElement('canvas');
         JsBarcode(canvas, value, Barcodes.OPTIONS);
-        return canvas.toDataURL();
+        const dataUrl = canvas.toDataURL();
+        Barcodes.cache.set(value, dataUrl);
+        return dataUrl;
     }
 
-    static programCode() {
-        return BarcodeCodec.buildProgramCode({
-            prefix:  Settings.get('programPrefix'),
-            ranking: Settings.get('rankingCode'),
-            target:  Settings.get('targetCode'),
+    static matchCode(match) {
+        return BarcodeCodec.buildMatchCode({
+            codePrefix: match.codePrefix,
+            matchCode:  match.matchCode,
+            targetCode: match.targetCode,
         });
     }
 
@@ -296,6 +308,637 @@ class Barcodes {
             license,
             enabled: Settings.get('licenseEnabled'),
         });
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Matches ("Stiche") — the competition rounds a participant can register for.
+// Stored as an ordered list in settings; the order drives print buttons and
+// print order. At least one match always exists.
+// -----------------------------------------------------------------------------
+
+class Matches {
+    static MAX = 5;
+
+    static all()      { return Settings.getRaw('matches') || []; }
+    static save(list) { Settings.setRaw('matches', list); }
+    static byKey(key) { return Matches.all().find(match => match.key === key) || null; }
+
+    static seedIfEmpty() {
+        if (Matches.all().length) return;
+        Matches.save([Matches.createDefault('H', Translations.t('match.defaultTitle'), '001')]);
+    }
+
+    static createDefault(label, title, matchCode) {
+        return {
+            key:          newKey(),
+            label,
+            title,
+            codePrefix:   '20',
+            matchCode,
+            targetCode:   '010',
+            price:        '0',
+            scorecardKey: Scorecards.all()[0]?.key ?? null,
+        };
+    }
+
+    static nextOrdinal() {
+        const codes = Matches.all().map(match => parseInt(match.matchCode, 10)).filter(Number.isFinite);
+        return (codes.length ? Math.max(...codes) : 0) + 1;
+    }
+
+    static add() {
+        const list = Matches.all();
+        if (list.length >= Matches.MAX) return;
+        const ordinal = Matches.nextOrdinal();
+        list.push(Matches.createDefault(String(ordinal), '', String(ordinal).padStart(3, '0')));
+        Matches.save(list);
+        Matches.renderSettings();
+        Matches.afterStructureChange();
+    }
+
+    static remove(key) {
+        const list = Matches.all();
+        if (list.length <= 1) return;
+        Matches.save(list.filter(match => match.key !== key));
+        Matches.renderSettings();
+        Matches.afterStructureChange();
+    }
+
+    static move(key, delta) {
+        const list = Matches.all();
+        const index = list.findIndex(match => match.key === key);
+        const target = index + delta;
+        if (index < 0 || target < 0 || target >= list.length) return;
+        [list[index], list[target]] = [list[target], list[index]];
+        Matches.save(list);
+        Matches.renderSettings();
+        Matches.afterStructureChange();
+    }
+
+    static update(key, field, value) {
+        const list = Matches.all();
+        const match = list.find(item => item.key === key);
+        if (!match) return;
+        match[field] = field === 'label' ? MatchOrder.normalizeLabel(value) : value;
+        Matches.save(list);
+        Participants.refreshMatchToggles();
+        Toolbar.renderPrintGroup();
+    }
+
+    static afterStructureChange() {
+        Participants.refreshMatchToggles();
+        Toolbar.renderPrintGroup();
+    }
+
+    static renderSettings() {
+        const body = $('matches-tbody');
+        if (!body) return;
+        const list = Matches.all();
+        const scorecardOptions = (selectedKey) => Scorecards.all().map(scorecard =>
+            `<option value="${Escape.escapeHtml(scorecard.key)}"${scorecard.key === selectedKey ? ' selected' : ''}>${Escape.escapeHtml(scorecard.name)}</option>`
+        ).join('');
+        const numberInput = (match, field, maxLength) =>
+            `<input class="match-cell mono" maxlength="${maxLength}" value="${Escape.escapeHtml(match[field])}" oninput="Matches.update('${match.key}','${field}',this.value)">`;
+        body.innerHTML = list.map((match, index) => `
+            <tr>
+                <td>${numberInput(match, 'label', 2)}</td>
+                <td><input class="match-cell" value="${Escape.escapeHtml(match.title)}" oninput="Matches.update('${match.key}','title',this.value)"></td>
+                <td>${numberInput(match, 'codePrefix', 2)}</td>
+                <td>${numberInput(match, 'matchCode', 3)}</td>
+                <td>${numberInput(match, 'targetCode', 3)}</td>
+                <td><input type="number" step="any" min="0" class="match-cell mono" value="${Escape.escapeHtml(match.price ?? '')}" oninput="Matches.update('${match.key}','price',this.value)"></td>
+                <td><select class="match-cell" onchange="Matches.update('${match.key}','scorecardKey',this.value)">${scorecardOptions(match.scorecardKey)}</select></td>
+                <td class="match-order">
+                    <button type="button" class="btn-neutral btn-icon" onclick="Matches.move('${match.key}',-1)"${index === 0 ? ' disabled' : ''} aria-label="${Escape.escapeHtml(Translations.t('btn.moveUp'))}">▲</button>
+                    <button type="button" class="btn-neutral btn-icon" onclick="Matches.move('${match.key}',1)"${index === list.length - 1 ? ' disabled' : ''} aria-label="${Escape.escapeHtml(Translations.t('btn.moveDown'))}">▼</button>
+                </td>
+                <td><button type="button" class="btn-danger-ghost btn-icon" onclick="Matches.remove('${match.key}')"${list.length <= 1 ? ' disabled' : ''} aria-label="✕">✕</button></td>
+            </tr>`).join('');
+        const addButton = $('add-match-button');
+        if (addButton) addButton.disabled = list.length >= Matches.MAX;
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Scorecards ("Standblätter") — print templates. Fields (barcodes, name, title,
+// event name, logo) are placed in millimetres over an optional PDF backdrop.
+// Each match points to one scorecard; at least one scorecard always exists.
+// -----------------------------------------------------------------------------
+
+class Scorecards {
+    static MAX_PDF_BYTES        = 1024 * 1024;
+    static PRINT_DPI            = 300;
+    static PREVIEW_WIDTH_PX     = 560;
+    static PREVIEW_MAX_HEIGHT_PX = 460;
+
+    static FIELDS = [
+        { kind: 'participantBarcode', type: 'barcode' },
+        { kind: 'matchBarcode',       type: 'barcode' },
+        { kind: 'participantName',    type: 'text'    },
+        { kind: 'participantYob',     type: 'text'    },
+        { kind: 'matchTitle',         type: 'text'    },
+        { kind: 'eventName',          type: 'text'    },
+        { kind: 'eventLogo',          type: 'image'   },
+        { kind: 'participantCustom1', type: 'text'    },
+        { kind: 'participantCustom2', type: 'text'    },
+        { kind: 'freeText1',          type: 'text', hasOwnText: true },
+        { kind: 'freeText2',          type: 'text', hasOwnText: true },
+    ];
+
+    static activeKey        = null;
+    static previewToken     = 0;
+    static previewBackdrops = new Map();
+
+    static all()      { return Settings.getRaw('scorecards') || []; }
+    static save(list) { Settings.setRaw('scorecards', list); }
+    static byKey(key) { return Scorecards.all().find(scorecard => scorecard.key === key) || null; }
+
+    static getActive() {
+        const all = Scorecards.all();
+        return all.find(scorecard => scorecard.key === Scorecards.activeKey) || all[0] || null;
+    }
+
+    static seedIfEmpty() {
+        if (Scorecards.all().length) return;
+        Scorecards.save([Scorecards.createDefault()]);
+    }
+
+    static createDefault() {
+        return {
+            key:          newKey(),
+            name:         Translations.t('scorecard.defaultName'),
+            pdfDataUrl:   '',
+            pageWidthMm:  70,
+            pageHeightMm: 198,
+            fields:       Scorecards.defaultFields(),
+        };
+    }
+
+    // Reproduces the classic 70×198 mm score sheet: content bottom-half of the
+    // sheet, mirrored into a second 35 mm column via the field pair (split,
+    // tear-off paper). Adjust freely per scorecard once created.
+    static defaultFields() {
+        const pair = (enabled) => ({ enabled, horizontalOffsetMm: 35, verticalOffsetMm: 0 });
+        return {
+            participantBarcode: { enabled: true,  fromLeftMm: 3,  fromTopMm: 128, widthMm: 30, heightMm: 15, pair: pair(false) },
+            matchBarcode:       { enabled: true,  fromLeftMm: 3,  fromTopMm: 142, widthMm: 30, heightMm: 15, pair: pair(false) },
+            participantName:    { enabled: true,  fromLeftMm: 3,  fromTopMm: 158, widthMm: 30, heightMm: 10, fontPt: 8, pair: pair(true) },
+            participantYob:     { enabled: true,  fromLeftMm: 22,  fromTopMm: 165, widthMm: 11, heightMm: 4,  fontPt: 8, pair: pair(true) },
+            matchTitle:         { enabled: true,  fromLeftMm: 3,  fromTopMm: 169, widthMm: 30, heightMm: 4,  fontPt: 6, pair: pair(true) },
+            eventName:          { enabled: true,  fromLeftMm: 3,  fromTopMm: 172, widthMm: 30, heightMm: 4,  fontPt: 6, pair: pair(true) },
+            eventLogo:          { enabled: true,  fromLeftMm: 3,  fromTopMm: 178, widthMm: 30, heightMm: 14, pair: pair(true) },
+            participantCustom1: { enabled: false, fromLeftMm: 3,  fromTopMm: 112, widthMm: 30, heightMm: 4,  fontPt: 8, pair: pair(true) },
+            participantCustom2: { enabled: false, fromLeftMm: 3,  fromTopMm: 108, widthMm: 30, heightMm: 4,  fontPt: 8, pair: pair(true) },
+            freeText1:          { enabled: true,  fromLeftMm: 38, fromTopMm: 150, widthMm: 30, heightMm: 5,  fontPt: 7, text: Translations.t('scorecard.copyText'), pair: pair(false) },
+            freeText2:          { enabled: false, fromLeftMm: 3,  fromTopMm: 112, widthMm: 30, heightMm: 5,  fontPt: 9, text: '', pair: pair(false) },
+        };
+    }
+
+    static fieldLabel(kind) {
+        if (kind === 'participantCustom1') return Settings.get('customColumn1Name').trim() || Translations.t('settings.customColumn1');
+        if (kind === 'participantCustom2') return Settings.get('customColumn2Name').trim() || Translations.t('settings.customColumn2');
+        return Translations.t('scorecard.field.' + kind);
+    }
+
+    // Merges a stored field over the default shape so a partial or hand-edited
+    // scorecard (missing a field kind or its pair) never crashes the editor.
+    static fieldOf(scorecard, kind) {
+        const base = Scorecards.defaultFields()[kind];
+        const stored = scorecard.fields?.[kind];
+        if (!stored) return base;
+        return { ...base, ...stored, pair: { ...base.pair, ...(stored.pair || {}) } };
+    }
+
+    static mutate(key, change) {
+        const list = Scorecards.all();
+        const scorecard = list.find(item => item.key === key);
+        if (!scorecard) return;
+        change(scorecard);
+        Scorecards.save(list);
+    }
+
+    static add() {
+        const scorecard = Scorecards.createDefault();
+        Scorecards.save([...Scorecards.all(), scorecard]);
+        Scorecards.activeKey = scorecard.key;
+        Scorecards.renderSettings();
+        Matches.renderSettings();
+    }
+
+    static clone(key) {
+        const source = Scorecards.byKey(key);
+        if (!source) return;
+        const copy = JSON.parse(JSON.stringify(source));
+        copy.key = newKey();
+        copy.name = `${source.name} ${Translations.t('scorecard.copySuffix')}`;
+        Scorecards.save([...Scorecards.all(), copy]);
+        Scorecards.activeKey = copy.key;
+        Scorecards.renderSettings();
+        Matches.renderSettings();
+    }
+
+    static remove(key) {
+        const list = Scorecards.all();
+        if (list.length <= 1) return;
+        const remaining = list.filter(scorecard => scorecard.key !== key);
+        Scorecards.save(remaining);
+        Scorecards.relinkMatches(key, remaining[0].key);
+        if (Scorecards.activeKey === key) Scorecards.activeKey = remaining[0].key;
+        Scorecards.invalidateBackdrop(key);
+        Scorecards.renderSettings();
+        Matches.renderSettings();
+    }
+
+    static relinkMatches(removedKey, fallbackKey) {
+        const matches = Matches.all();
+        let changed = false;
+        matches.forEach(match => {
+            if (match.scorecardKey === removedKey) { match.scorecardKey = fallbackKey; changed = true; }
+        });
+        if (changed) Matches.save(matches);
+    }
+
+    static setActive(key) {
+        Scorecards.activeKey = key;
+        Scorecards.renderSettings();
+    }
+
+    static rename(key, name) {
+        Scorecards.mutate(key, scorecard => { scorecard.name = name; });
+        Matches.renderSettings();
+        Scorecards.refreshSettingsTitle();
+    }
+
+    static NON_NEGATIVE_FIELD_PROPS = new Set(['widthMm', 'heightMm', 'fontPt']);
+
+    static setPage(key, dimension, value) {
+        Scorecards.mutate(key, scorecard => { scorecard[dimension] = Math.max(1, Number(value) || 0); });
+        Scorecards.renderPreview();
+    }
+
+    // Scorecards saved before a field kind existed have no entry for it, so every
+    // write goes through the merged default shape first.
+    static writableField(scorecard, kind) {
+        if (!scorecard.fields) scorecard.fields = {};
+        scorecard.fields[kind] = Scorecards.fieldOf(scorecard, kind);
+        return scorecard.fields[kind];
+    }
+
+    static setFieldEnabled(key, kind, enabled) {
+        Scorecards.mutate(key, scorecard => { Scorecards.writableField(scorecard, kind).enabled = enabled; });
+        Scorecards.renderPreview();
+    }
+
+    static setFieldNumber(key, kind, property, value) {
+        const number = Number(value) || 0;
+        const clamped = Scorecards.NON_NEGATIVE_FIELD_PROPS.has(property) ? Math.max(0, number) : number;
+        Scorecards.mutate(key, scorecard => { Scorecards.writableField(scorecard, kind)[property] = clamped; });
+        Scorecards.renderPreview();
+    }
+
+    static setFieldText(key, kind, text) {
+        Scorecards.mutate(key, scorecard => { Scorecards.writableField(scorecard, kind).text = text; });
+        Scorecards.renderPreview();
+    }
+
+    static setPairEnabled(key, kind, enabled) {
+        Scorecards.mutate(key, scorecard => { Scorecards.writableField(scorecard, kind).pair.enabled = enabled; });
+        Scorecards.renderPreview();
+    }
+
+    static setPairOffset(key, kind, property, value) {
+        Scorecards.mutate(key, scorecard => { Scorecards.writableField(scorecard, kind).pair[property] = Number(value) || 0; });
+        Scorecards.renderPreview();
+    }
+
+    static async uploadPdf(key, input) {
+        const file = input.files[0];
+        input.value = '';
+        if (!file) return;
+        if (file.size > Scorecards.MAX_PDF_BYTES) { alert(Translations.t('msg.pdfTooLarge')); return; }
+        const dataUrl = await Scorecards.fileToDataUrl(file);
+        const pageSize = await Scorecards.readPageSize(dataUrl);
+        try {
+            Scorecards.mutate(key, scorecard => {
+                scorecard.pdfDataUrl = dataUrl;
+                if (pageSize) { scorecard.pageWidthMm = pageSize.widthMm; scorecard.pageHeightMm = pageSize.heightMm; }
+            });
+        } catch (_) {
+            alert(Translations.t('msg.storageFull'));
+            return;
+        }
+        Scorecards.invalidateBackdrop(key);
+        Scorecards.renderSettings();
+    }
+
+    static clearPdf(key) {
+        Scorecards.mutate(key, scorecard => { scorecard.pdfDataUrl = ''; });
+        Scorecards.invalidateBackdrop(key);
+        Scorecards.renderSettings();
+    }
+
+    static fileToDataUrl(file) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload  = () => resolve(reader.result);
+            reader.onerror = () => reject(reader.error);
+            reader.readAsDataURL(file);
+        });
+    }
+
+    static dataUrlToBytes(dataUrl) {
+        const binary = atob(dataUrl.split(',')[1] || '');
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        return bytes;
+    }
+
+    static async loadFirstPage(dataUrl) {
+        if (typeof pdfjsLib === 'undefined') return null;
+        const document = await pdfjsLib.getDocument({ data: Scorecards.dataUrlToBytes(dataUrl) }).promise;
+        return document.getPage(1);
+    }
+
+    static async readPageSize(dataUrl) {
+        try {
+            const page = await Scorecards.loadFirstPage(dataUrl);
+            if (!page) return null;
+            const viewport = page.getViewport({ scale: 1 });
+            const pointToMm = 25.4 / 72;
+            return { widthMm: Math.round(viewport.width * pointToMm), heightMm: Math.round(viewport.height * pointToMm) };
+        } catch (_) {
+            return null;
+        }
+    }
+
+    static async rasterize(dataUrl, targetWidthPx) {
+        try {
+            const page = await Scorecards.loadFirstPage(dataUrl);
+            if (!page) return null;
+            const unscaled = page.getViewport({ scale: 1 });
+            const viewport = page.getViewport({ scale: targetWidthPx / unscaled.width });
+            const canvas = document.createElement('canvas');
+            canvas.width  = Math.ceil(viewport.width);
+            canvas.height = Math.ceil(viewport.height);
+            await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+            return canvas.toDataURL('image/png');
+        } catch (_) {
+            return null;
+        }
+    }
+
+    // One scorecard lookup for a whole print run, so we parse the (PDF-heavy)
+    // settings blob once instead of per pair.
+    static resolver() {
+        const all = Scorecards.all();
+        const byKey = new Map(all.map(scorecard => [scorecard.key, scorecard]));
+        const fallback = all[0] || null;
+        return (match) => byKey.get(match?.scorecardKey) || fallback;
+    }
+
+    static async rasterizeBackdrops(pairs, resolveScorecard) {
+        const scorecards = new Map();
+        pairs.forEach(({ match }) => {
+            const scorecard = resolveScorecard(match);
+            if (scorecard) scorecards.set(scorecard.key, scorecard);
+        });
+        const backdrops = new Map();
+        await Promise.all([...scorecards.values()].map(async scorecard => {
+            const widthPx = Math.round(scorecard.pageWidthMm / 25.4 * Scorecards.PRINT_DPI);
+            backdrops.set(scorecard.key, scorecard.pdfDataUrl ? await Scorecards.rasterize(scorecard.pdfDataUrl, widthPx) : null);
+        }));
+        return backdrops;
+    }
+
+    static invalidateBackdrop(key) { Scorecards.previewBackdrops.delete(key); }
+
+    static async previewBackdrop(scorecard) {
+        if (!scorecard.pdfDataUrl) return null;
+        if (!Scorecards.previewBackdrops.has(scorecard.key)) {
+            Scorecards.previewBackdrops.set(scorecard.key, await Scorecards.rasterize(scorecard.pdfDataUrl, Scorecards.PREVIEW_WIDTH_PX));
+        }
+        return Scorecards.previewBackdrops.get(scorecard.key);
+    }
+
+    static buildSheet(scorecard, participant, match, backdropDataUrl) {
+        const sheet = document.createElement('div');
+        sheet.className = 'scorecard-sheet';
+        sheet.style.width  = `${scorecard.pageWidthMm}mm`;
+        sheet.style.height = `${scorecard.pageHeightMm}mm`;
+        if (backdropDataUrl) {
+            const backdrop = document.createElement('img');
+            backdrop.className = 'scorecard-backdrop';
+            backdrop.src = backdropDataUrl;
+            sheet.appendChild(backdrop);
+        }
+        Scorecards.FIELDS.forEach(({ kind, type }) => {
+            const field = Scorecards.fieldOf(scorecard, kind);
+            if (!field.enabled) return;
+            const value = Scorecards.fieldValue(kind, participant, match, field);
+            if (!value) return;
+            ScorecardLayout.fieldPlacements(field).forEach(placement => {
+                sheet.appendChild(Scorecards.buildFieldElement(type, field, value, placement));
+            });
+        });
+        return sheet;
+    }
+
+    static fieldValue(kind, participant, match, field) {
+        switch (kind) {
+            case 'participantBarcode': {
+                const code = Barcodes.participantCode((participant.license || '').trim());
+                return code ? Barcodes.render(code) : null;
+            }
+            case 'matchBarcode': {
+                const code = Barcodes.matchCode(match);
+                return code ? Barcodes.render(code) : null;
+            }
+            case 'participantName': return `${participant.lastName || ''} ${participant.firstName || ''}`.trim() || null;
+            case 'participantYob': {
+                if (!participant.yearOfBirth) return null;
+                const category = Categories.get(participant.yearOfBirth);
+                return category ? `${participant.yearOfBirth} ${category.code}` : String(participant.yearOfBirth);
+            }
+            case 'matchTitle':      return match.title || match.label || null;
+            case 'eventName':       return Settings.get('eventName') || null;
+            case 'eventLogo':       return Settings.getRaw('eventLogo') || null;
+            case 'participantCustom1': return (participant.custom1 || '').trim() || null;
+            case 'participantCustom2': return (participant.custom2 || '').trim() || null;
+            case 'freeText1':
+            case 'freeText2':       return (field?.text || '').trim() || null;
+            default:                return null;
+        }
+    }
+
+    static buildFieldElement(type, field, value, placement) {
+        const box = document.createElement('div');
+        box.className = 'scorecard-field';
+        box.style.left   = `${placement.fromLeftMm}mm`;
+        box.style.top    = `${placement.fromTopMm}mm`;
+        box.style.width  = `${placement.widthMm}mm`;
+        box.style.height = `${placement.heightMm}mm`;
+        if (type === 'text') {
+            box.classList.add('scorecard-field-text');
+            box.style.fontSize = `${field.fontPt || 10}pt`;
+            box.textContent = value;
+        } else {
+            const image = document.createElement('img');
+            image.className = 'scorecard-field-img';
+            image.src = value;
+            box.appendChild(image);
+        }
+        return box;
+    }
+
+    static previewParticipant() {
+        const row = document.querySelector('#participants-tbody tr:not(.empty-row)');
+        if (row) return Participants.readRow(row);
+        return {
+            license:     '123456',
+            lastName:    Translations.t('preview.sampleLastName'),
+            firstName:   Translations.t('preview.sampleFirstName'),
+            yearOfBirth: '1990',
+        };
+    }
+
+    static previewMatch(scorecard) {
+        const matches = Matches.all();
+        return matches.find(match => match.scorecardKey === scorecard.key) || matches[0] || null;
+    }
+
+    // Same print path as a real score sheet, fed with the preview sample data —
+    // the browser dialog then offers full-size print or "save as PDF".
+    static printPreview() {
+        const scorecard = Scorecards.getActive();
+        if (!scorecard) return;
+        const match = { ...(Scorecards.previewMatch(scorecard) || {}), scorecardKey: scorecard.key };
+        Printing.run([{ participant: Scorecards.previewParticipant(), match }]);
+    }
+
+    static async renderPreview() {
+        const wrap = $('scorecard-preview');
+        if (!wrap) return;
+        const scorecard = Scorecards.getActive();
+        if (!scorecard) { wrap.innerHTML = ''; return; }
+        const token = ++Scorecards.previewToken;
+        const backdrop = await Scorecards.previewBackdrop(scorecard);
+        if (token !== Scorecards.previewToken) return;
+        const sheet = Scorecards.buildSheet(scorecard, Scorecards.previewParticipant(), Scorecards.previewMatch(scorecard) || {}, backdrop);
+        const scaler = document.createElement('div');
+        scaler.className = 'scorecard-preview-scaler';
+        scaler.appendChild(sheet);
+        wrap.innerHTML = '';
+        wrap.appendChild(scaler);
+        const pixelPerMm = 96 / 25.4;
+        const pageWidthPx = scorecard.pageWidthMm * pixelPerMm;
+        const pageHeightPx = scorecard.pageHeightMm * pixelPerMm;
+        const widthScale  = pageWidthPx  ? (wrap.clientWidth || 480) / pageWidthPx : 1;
+        const heightScale = pageHeightPx ? Scorecards.PREVIEW_MAX_HEIGHT_PX / pageHeightPx : 1;
+        const scale = Math.min(1, widthScale, heightScale);
+        scaler.style.transform = `scale(${scale})`;
+        wrap.style.height = `${pageHeightPx * scale}px`;
+    }
+
+    static renderSettings() {
+        const listBody = $('scorecards-tbody');
+        const editor   = $('scorecard-editor');
+        if (!listBody || !editor) return;
+        const all = Scorecards.all();
+        const active = Scorecards.getActive();
+        Scorecards.activeKey = active?.key ?? null;
+        listBody.innerHTML = all.map(scorecard => Scorecards.listRowHtml(scorecard, active, all.length)).join('');
+        editor.innerHTML = active ? Scorecards.editorHtml(active) : '';
+        Scorecards.refreshSettingsTitle();
+        Scorecards.renderPreview();
+    }
+
+    static refreshSettingsTitle() {
+        const title = $('scorecard-settings-title');
+        if (!title) return;
+        const active = Scorecards.getActive();
+        title.textContent = active ? Translations.t('scorecard.settingsTitle', { name: active.name }) : '';
+    }
+
+    static listRowHtml(scorecard, active, count) {
+        const isActive = active && scorecard.key === active.key;
+        return `
+            <tr class="scorecard-row${isActive ? ' is-active' : ''}">
+                <td><input type="radio" name="active-scorecard" ${isActive ? 'checked' : ''} onchange="Scorecards.setActive('${scorecard.key}')" aria-label="${Escape.escapeHtml(Translations.t('scorecard.edit'))}"></td>
+                <td><input class="scorecard-name" value="${Escape.escapeHtml(scorecard.name)}" oninput="Scorecards.rename('${scorecard.key}',this.value)"></td>
+                <td><button type="button" class="btn-neutral btn-icon" onclick="Scorecards.clone('${scorecard.key}')" title="${Escape.escapeHtml(Translations.t('scorecard.clone'))}" aria-label="${Escape.escapeHtml(Translations.t('scorecard.clone'))}">⧉</button></td>
+                <td><button type="button" class="btn-danger-ghost btn-icon" onclick="Scorecards.remove('${scorecard.key}')"${count <= 1 ? ' disabled' : ''} aria-label="✕">✕</button></td>
+            </tr>`;
+    }
+
+    static editorHtml(scorecard) {
+        const t = (key) => Escape.escapeHtml(Translations.t(key));
+        const numberCell = (kind, property, value, min) =>
+            `<input type="number" step="any"${min === undefined ? '' : ` min="${min}"`} class="scorecard-num" value="${value}" oninput="Scorecards.setFieldNumber('${scorecard.key}','${kind}','${property}',this.value)">`;
+        const fieldRows = Scorecards.FIELDS.map(({ kind, type, hasOwnText }) => {
+            const field = Scorecards.fieldOf(scorecard, kind);
+            const fontCell = type === 'text'
+                ? `<input type="number" step="any" min="0" class="scorecard-num" value="${field.fontPt || 10}" oninput="Scorecards.setFieldNumber('${scorecard.key}','${kind}','fontPt',this.value)">`
+                : '';
+            const label = Escape.escapeHtml(Scorecards.fieldLabel(kind));
+            const nameCell = hasOwnText
+                ? `<input type="text" class="scorecard-text" value="${Escape.escapeHtml(field.text || '')}" placeholder="${label}" aria-label="${label}" oninput="Scorecards.setFieldText('${scorecard.key}','${kind}',this.value)">`
+                : label;
+            return `
+                <tr>
+                    <td>${nameCell}</td>
+                    <td><input type="checkbox" ${field.enabled ? 'checked' : ''} onchange="Scorecards.setFieldEnabled('${scorecard.key}','${kind}',this.checked)"></td>
+                    <td>${numberCell(kind, 'fromLeftMm', field.fromLeftMm)}</td>
+                    <td>${numberCell(kind, 'fromTopMm', field.fromTopMm)}</td>
+                    <td>${numberCell(kind, 'widthMm', field.widthMm, 0)}</td>
+                    <td>${numberCell(kind, 'heightMm', field.heightMm, 0)}</td>
+                    <td>${fontCell}</td>
+                    <td><input type="checkbox" ${field.pair.enabled ? 'checked' : ''} onchange="Scorecards.setPairEnabled('${scorecard.key}','${kind}',this.checked)"></td>
+                    <td><input type="number" step="any" class="scorecard-num" value="${field.pair.horizontalOffsetMm}" oninput="Scorecards.setPairOffset('${scorecard.key}','${kind}','horizontalOffsetMm',this.value)"></td>
+                    <td><input type="number" step="any" class="scorecard-num" value="${field.pair.verticalOffsetMm}" oninput="Scorecards.setPairOffset('${scorecard.key}','${kind}','verticalOffsetMm',this.value)"></td>
+                </tr>`;
+        }).join('');
+        const backdropControl = scorecard.pdfDataUrl
+            ? `<span class="license-db-status">${t('scorecard.backdropLoaded')}</span>
+               <button type="button" class="btn-danger-ghost" onclick="Scorecards.clearPdf('${scorecard.key}')">${t('scorecard.removeBackdrop')}</button>`
+            : `<input type="file" class="scorecard-pdf-input" accept="application/pdf" onchange="Scorecards.uploadPdf('${scorecard.key}',this)">
+               <span class="license-db-status">${t('scorecard.backdropNone')}</span>`;
+        return `
+            <div class="scorecard-editor-head">
+                <div class="scorecard-backdrop-control">
+                    <label>${t('scorecard.backdrop')}</label>
+                    <div class="license-db-row scorecard-backdrop-row">${backdropControl}</div>
+                    <p class="settings-section-description">${t('scorecard.backdropHint')}</p>
+                </div>
+                <div class="scorecard-page-control">
+                    <label>${t('scorecard.pageSize')}</label>
+                    <div class="scorecard-page-inputs">
+                        <input type="number" step="any" class="scorecard-num" value="${scorecard.pageWidthMm}" oninput="Scorecards.setPage('${scorecard.key}','pageWidthMm',this.value)">
+                        <span>×</span>
+                        <input type="number" step="any" class="scorecard-num" value="${scorecard.pageHeightMm}" oninput="Scorecards.setPage('${scorecard.key}','pageHeightMm',this.value)">
+                        <span>mm</span>
+                    </div>
+                </div>
+            </div>
+            <div class="table-scroll-x">
+            <table class="scorecard-fields-table">
+                <thead>
+                    <tr>
+                        <th>${t('scorecard.col.field')}</th>
+                        <th>${t('scorecard.col.show')}</th>
+                        <th>${t('scorecard.col.fromLeft')}</th>
+                        <th>${t('scorecard.col.fromTop')}</th>
+                        <th>${t('scorecard.col.width')}</th>
+                        <th>${t('scorecard.col.height')}</th>
+                        <th>${t('scorecard.col.font')}</th>
+                        <th>${t('scorecard.col.pair')}</th>
+                        <th>${t('scorecard.col.pairLeft')}</th>
+                        <th>${t('scorecard.col.pairTop')}</th>
+                    </tr>
+                </thead>
+                <tbody>${fieldRows}</tbody>
+            </table>
+            </div>`;
     }
 }
 
@@ -360,9 +1003,94 @@ class Participants {
     }
 
     static readRow(rowEl) {
-        return Object.fromEntries(
+        const data = Object.fromEntries(
             Participants.FIELDS.map(f => [f.key, rowEl.querySelector('.' + f.cls)?.value ?? ''])
         );
+        data.registeredMatches = Participants.readRegisteredMatches(rowEl);
+        data.paid = Participants.isPaid(rowEl);
+        return data;
+    }
+
+    static readRegisteredMatches(rowEl) {
+        return [...rowEl.querySelectorAll('.match-toggle.is-on')].map(button => button.dataset.matchKey);
+    }
+
+    static defaultRegistration() {
+        const first = Matches.all()[0];
+        return first ? [first.key] : [];
+    }
+
+    static matchTogglesHtml(registeredMatches) {
+        const active = new Set(registeredMatches || []);
+        return Matches.all().map(match => {
+            const isOn  = active.has(match.key);
+            const title = Escape.escapeHtml(match.title || match.label);
+            return `<button type="button" class="match-toggle${isOn ? ' is-on' : ''}" data-match-key="${Escape.escapeHtml(match.key)}" aria-pressed="${isOn}" title="${title}" onclick="Participants.toggleMatch(this)" tabindex="-1">${Escape.escapeHtml(match.label)}</button>`;
+        }).join('');
+    }
+
+    static toggleMatch(button) {
+        const isOn = button.classList.toggle('is-on');
+        button.setAttribute('aria-pressed', isOn);
+        Participants.updatePayment(button.closest('tr'));
+        Participants.handleChanged();
+    }
+
+    static refreshMatchToggles() {
+        $$('#participants-tbody tr').forEach(rowEl => {
+            const group = rowEl.querySelector('.match-toggle-group');
+            if (group) group.innerHTML = Participants.matchTogglesHtml(Participants.readRegisteredMatches(rowEl));
+            Participants.applyLock(rowEl, rowEl.classList.contains('row-paid'));
+            Participants.updatePayment(rowEl);
+        });
+    }
+
+    // Payment gate: confirming payment locks the row (fields + match toggles) and
+    // enables printing; reverting (behind a confirm) unlocks it and disables print.
+    static isPaid(rowEl) {
+        return rowEl.classList.contains('row-paid');
+    }
+
+    static togglePaid(button) {
+        const rowEl = button.closest('tr');
+        if (!rowEl || rowEl.classList.contains('empty-row')) return;
+        const paid = Participants.isPaid(rowEl);
+        if (paid && !confirm(Translations.t('confirm.revertPayment'))) return;
+        Participants.setPaid(rowEl, !paid);
+        Participants.handleChanged();
+    }
+
+    static setPaid(rowEl, paid) {
+        rowEl.classList.toggle('row-paid', paid);
+        Participants.applyLock(rowEl, paid);
+        Participants.updatePayment(rowEl);
+    }
+
+    static applyLock(rowEl, locked) {
+        Participants.FIELDS.forEach(f => {
+            const el = rowEl.querySelector('.' + f.cls);
+            if (el) el.readOnly = locked;
+        });
+        rowEl.querySelectorAll('.match-toggle').forEach(button => { button.disabled = locked; });
+        const lens = rowEl.querySelector('.license-search-btn');
+        if (lens) { if (locked) lens.disabled = true; else Participants.updateLensState(rowEl); }
+        const printButton = rowEl.querySelector('[data-row-action="print"]');
+        if (printButton) printButton.disabled = !locked;
+    }
+
+    static formatPrice(value) {
+        return (Number(value) || 0).toFixed(2);
+    }
+
+    static updatePayment(rowEl) {
+        const button = rowEl.querySelector('.payment-toggle');
+        if (!button) return;
+        const paid  = Participants.isPaid(rowEl);
+        const total = MatchOrder.totalPrice(Participants.readRegisteredMatches(rowEl), Matches.all());
+        button.textContent = (paid ? '✓ ' : '') + Participants.formatPrice(total);
+        button.classList.toggle('is-paid', paid);
+        button.setAttribute('aria-pressed', paid ? 'true' : 'false');
+        button.title = Translations.t(paid ? 'payment.revertHint' : 'payment.confirmHint');
     }
 
     static visibleColumns() {
@@ -405,35 +1133,53 @@ class Participants {
             return `<td${colAttr}>${input}</td>`;
         }).join('');
 
-        const printLabel = Escape.escapeHtml(Translations.t('btn.print'));
+        const printLabel = Escape.escapeHtml(Translations.t('btn.printParticipant'));
+        const toggles    = Participants.matchTogglesHtml(data.registeredMatches);
         return `
             <td><input type="checkbox" class="row-check" tabindex="-1" onchange="Toolbar.updateLabels()"></td>
             ${cells}
+            <td class="registered-cell"><div class="match-toggle-group">${toggles}</div></td>
+            <td class="payment-cell"><button type="button" class="payment-toggle" onclick="Participants.togglePaid(this)" tabindex="-1"></button></td>
             <td class="row-actions">
-                <button class="btn-neutral btn-icon" data-row-action="print" onclick="Printing.labels(this.closest('tr'))" title="${printLabel}" aria-label="${printLabel}" tabindex="-1">${Participants.PRINT_ICON}</button>
+                <button class="btn-neutral btn-icon" data-row-action="print" onclick="Printing.participant(this.closest('tr'))" title="${printLabel}" aria-label="${printLabel}" tabindex="-1">${Participants.PRINT_ICON}</button>
                 <button class="btn-danger-ghost btn-icon" onclick="Participants.deleteRow(this)" aria-label="✕" tabindex="-1">✕</button>
             </td>`;
     }
 
     static addRow(data = {}) {
         const tr = document.createElement('tr');
-        if (!data.lastName) tr.className = 'empty-row';
-        tr.innerHTML = Participants.buildRowHtml(data);
+        const classes = [];
+        if (!data.lastName) classes.push('empty-row');
+        if (data.paid)      classes.push('row-paid');
+        tr.className = classes.join(' ');
+        const rowData = data.registeredMatches === undefined
+            ? { ...data, registeredMatches: Participants.defaultRegistration() }
+            : data;
+        tr.innerHTML = Participants.buildRowHtml(rowData);
         $('participants-tbody').appendChild(tr);
         Categories.updateBadge(tr);
         Participants.applyColumnVisibility();
+        Participants.applyLock(tr, !!data.paid);
+        Participants.updatePayment(tr);
         return tr;
     }
 
     static writeRow(tr, data) {
         Participants.FIELDS.forEach(f => {
+            if (data[f.key] === undefined) return; // absent from the update — keep the existing value
             const el = tr.querySelector('.' + f.cls);
             if (!el) return;
             el.value = (data[f.key] ?? '').toString();
         });
-        tr.classList.toggle('empty-row', !(data.lastName ?? '').trim());
+        if (data.registeredMatches !== undefined) {
+            const group = tr.querySelector('.match-toggle-group');
+            if (group) group.innerHTML = Participants.matchTogglesHtml(data.registeredMatches);
+        }
+        const lastName = tr.querySelector('.field-lastname');
+        tr.classList.toggle('empty-row', !(lastName?.value ?? '').trim());
         Categories.updateBadge(tr);
-        Participants.updateLensState(tr);
+        Participants.applyLock(tr, Participants.isPaid(tr));
+        Participants.updatePayment(tr);
     }
 
     static findRowByLicense(license) {
@@ -560,8 +1306,8 @@ class Participants {
             $$('#participants-tbody .' + f.cls).forEach(input => { input.placeholder = Translations.t(f.placeholderKey); });
         });
         $$('#participants-tbody [data-row-action="print"]').forEach(btn => {
-            btn.title = Translations.t('btn.print');
-            btn.setAttribute('aria-label', Translations.t('btn.print'));
+            btn.title = Translations.t('btn.printParticipant');
+            btn.setAttribute('aria-label', Translations.t('btn.printParticipant'));
         });
         $$('#participants-tbody .license-search-btn').forEach(btn => {
             btn.title = Translations.t('btn.searchLicense');
@@ -632,11 +1378,22 @@ class Filter {
 
 class Toolbar {
     static BUTTONS = [
-        { id: 'btn-toolbar-print',    verbKey: 'verb.print'    },
-        { id: 'btn-toolbar-download', verbKey: 'verb.download' },
-        { id: 'btn-toolbar-copy',     verbKey: 'verb.copy'     },
-        { id: 'btn-toolbar-delete',   verbKey: 'verb.delete'   },
+        { id: 'btn-toolbar-download', verbKey: 'verb.download', icon: '⤓' },
+        { id: 'btn-toolbar-copy',     verbKey: 'verb.copy',     icon: '⧉' },
+        { id: 'btn-toolbar-delete',   verbKey: 'verb.delete',   icon: '🗑' },
     ];
+
+    static renderPrintGroup() {
+        const group = $('print-group');
+        if (!group) return;
+        const icon = `<span class="print-group-icon" aria-hidden="true">${Participants.PRINT_ICON}</span>`;
+        const matchButtons = Matches.all().map(match => {
+            const title = Escape.escapeHtml(Translations.t('btn.printMatch', { title: match.title || match.label }));
+            return `<button type="button" class="print-match-btn" onclick="Printing.printMatch('${Escape.escapeHtml(match.key)}')" title="${title}">${Escape.escapeHtml(match.label)}</button>`;
+        }).join('');
+        const allButton = `<button type="button" class="print-all-btn" onclick="Printing.printAll()">${Escape.escapeHtml(Translations.t('btn.printAll'))}</button>`;
+        group.innerHTML = icon + matchButtons + allButton;
+    }
 
     static updateMaster() {
         const master = $('master-check');
@@ -650,9 +1407,11 @@ class Toolbar {
     static updateLabels() {
         const selected = Selection.getSelectedRows();
         const count = selected.length > 0 ? String(selected.length) : Translations.t('count.all');
-        Toolbar.BUTTONS.forEach(({ id, verbKey }) => {
+        Toolbar.BUTTONS.forEach(({ id, verbKey, icon }) => {
             const btn = $(id);
-            if (btn) btn.innerHTML = `<span class="btn-count">${Escape.escapeHtml(count)}</span> ${Escape.escapeHtml(Translations.t(verbKey))}`;
+            if (!btn) return;
+            btn.innerHTML = `<span class="toolbar-btn-icon" aria-hidden="true">${icon}</span>`
+                + `<span class="btn-count">${Escape.escapeHtml(count)}</span> ${Escape.escapeHtml(Translations.t(verbKey))}`;
         });
         Toolbar.updateMaster();
     }
@@ -663,15 +1422,35 @@ class Toolbar {
 // -----------------------------------------------------------------------------
 
 class CsvIO {
+    static matchColumns() {
+        return Matches.all().map(match => ({ key: match.key, header: `match_${match.matchCode}` }));
+    }
+
+    // Applies the file's registration columns onto the existing registrations:
+    // matches present in the file are set/cleared by their cell, matches absent
+    // from the file keep their current state (so a partial file never wipes them).
+    static mergeRegistrations(existingKeys, fileRegistrations) {
+        const merged = new Set(existingKeys);
+        fileRegistrations.forEach((registered, matchKey) => {
+            if (registered) merged.add(matchKey);
+            else merged.delete(matchKey);
+        });
+        return [...merged];
+    }
+
     static buildDelimited(rows, separator, { includeHeader = true } = {}) {
         const cols = Participants.visibleColumns();
+        const matchCols = CsvIO.matchColumns();
         const lines = [];
         if (includeHeader) {
-            lines.push(cols.map(f => Escape.escapeCsvField(Participants.fieldHeader(f), separator)).join(separator));
+            const headers = [...cols.map(f => Participants.fieldHeader(f)), ...matchCols.map(c => c.header)];
+            lines.push(headers.map(header => Escape.escapeCsvField(header, separator)).join(separator));
         }
         rows.forEach(tr => {
             const data = Participants.readRow(tr);
-            lines.push(cols.map(f => Escape.escapeCsvField(data[f.key], separator)).join(separator));
+            const registered = new Set(data.registeredMatches || []);
+            const cells = [...cols.map(f => data[f.key]), ...matchCols.map(c => registered.has(c.key) ? '1' : '0')];
+            lines.push(cells.map(cell => Escape.escapeCsvField(cell, separator)).join(separator));
         });
         return lines.join('\r\n');
     }
@@ -687,13 +1466,19 @@ class CsvIO {
     static downloadTemplate() {
         const separator = ';';
         const cols = Participants.visibleColumns();
+        const matchCols = CsvIO.matchColumns();
         const samples = [
             { lastName: 'Muster', firstName: 'Hans', yearOfBirth: '1990' },
             { lastName: 'Modèle', firstName: 'Jean', yearOfBirth: '1985' },
         ];
+        const row = (sample) => [
+            ...cols.map(f => sample[f.key] ?? ''),
+            ...matchCols.map((c, index) => index === 0 ? '1' : '0'),
+        ].map(cell => Escape.escapeCsvField(cell, separator)).join(separator);
         const lines = [
-            cols.map(f => Escape.escapeCsvField(Participants.fieldHeader(f), separator)).join(separator),
-            ...samples.map(s => cols.map(f => Escape.escapeCsvField(s[f.key] ?? '', separator)).join(separator)),
+            [...cols.map(f => Participants.fieldHeader(f)), ...matchCols.map(c => c.header)]
+                .map(header => Escape.escapeCsvField(header, separator)).join(separator),
+            ...samples.map(row),
         ];
         const csv = '﻿' + lines.join('\r\n');
         triggerDownload(`${Translations.t('template.filename')}.csv`, new Blob([csv], { type: 'text/csv;charset=utf-8' }));
@@ -726,10 +1511,20 @@ class CsvIO {
             const rows = Csv.parseCsv(text, Csv.detectSeparator(firstLine));
             if (rows.length < 2) return;
 
-            // Column order matches the visible participant table — same shape
-            // that CsvIO.buildDelimited writes. The first row is always treated
-            // as a header and skipped; subsequent rows are positional.
-            const columns = Participants.visibleColumns();
+            // Columns are mapped by their header name (the headers the export and
+            // template write), so an import stays correct even if the visible
+            // columns changed since export. Each standard field maps by its own
+            // header; `match_<matchCode>` columns carry the registrations.
+            const header = rows[0].map(cell => cell.trim().toLowerCase());
+            const fieldByHeader = new Map();
+            Participants.FIELDS.forEach(field => {
+                const headerName = Participants.fieldHeader(field).trim().toLowerCase();
+                if (headerName) fieldByHeader.set(headerName, field.key);
+            });
+            const matchByHeader = new Map(CsvIO.matchColumns().map(column => [column.header.toLowerCase(), column.key]));
+            const fieldByColumn = header.map(cell => fieldByHeader.get(cell) || null);
+            const matchByColumn = header.map(cell => matchByHeader.get(cell) || null);
+            const importsRegistrations = matchByColumn.some(Boolean);
 
             const trailing = document.querySelector('#participants-tbody tr.empty-row');
             if (trailing) trailing.remove();
@@ -738,16 +1533,29 @@ class CsvIO {
             let updated = 0;
             for (let r = 1; r < rows.length; r++) {
                 const data = {};
-                columns.forEach((field, c) => {
-                    data[field.key] = (rows[r][c] ?? '').trim();
+                fieldByColumn.forEach((fieldKey, c) => {
+                    if (fieldKey) data[fieldKey] = (rows[r][c] ?? '').trim();
                 });
                 if (!data.lastName && !data.firstName) continue;
 
+                const fileRegistrations = new Map(); // matchKey -> registered?
+                matchByColumn.forEach((matchKey, c) => {
+                    if (!matchKey) return;
+                    const cell = (rows[r][c] ?? '').trim();
+                    fileRegistrations.set(matchKey, cell !== '' && cell !== '0');
+                });
+
                 const existing = Participants.findRowByLicense(data.license);
                 if (existing) {
+                    if (importsRegistrations) {
+                        data.registeredMatches = CsvIO.mergeRegistrations(Participants.readRegisteredMatches(existing), fileRegistrations);
+                    }
                     Participants.writeRow(existing, data);
                     updated++;
                 } else {
+                    if (importsRegistrations) {
+                        data.registeredMatches = [...fileRegistrations].filter(([, on]) => on).map(([key]) => key);
+                    }
                     Participants.addRow(data);
                     added++;
                 }
@@ -767,65 +1575,56 @@ class CsvIO {
 // -----------------------------------------------------------------------------
 
 class Printing {
-    static buildLabelHtml({ participant, programImg, participantImg, eventName, logoHtml }) {
-        const cat = Categories.get(participant.yearOfBirth);
-        const yobLine = participant.yearOfBirth
-            ? (cat ? `${participant.yearOfBirth} ${cat.code}` : participant.yearOfBirth)
-            : '';
-        const info = `
-            <div class="label-info">
-                <div class="label-row label-bold">${Escape.escapeHtml(participant.lastName)} ${Escape.escapeHtml(participant.firstName)}</div>
-                <div class="label-row">${Escape.escapeHtml(yobLine)}</div>
-                <hr>
-                <div class="label-event">${Escape.escapeHtml(eventName)}</div>
-                ${logoHtml}
-            </div>`;
-        const partImg = participantImg ? `<img class="label-barcode-img" src="${participantImg}">` : '';
-        const progImg = programImg     ? `<img class="label-barcode-img" src="${programImg}">`     : '';
-        const gap     = (participantImg && programImg) ? `<div class="label-barcode-gap"></div>` : '';
-        const barcodes = `${partImg}${gap}${progImg}`;
-        return `
-            <div class="label-col label-col-left">
-                <div class="label-top-spacer"></div>
-                <div class="label-barcodes">${barcodes}</div>
-                <div class="label-info-gap"></div>
-                ${info}
-            </div>
-            <div class="label-col">
-                <div class="label-top-spacer"></div>
-                <div class="label-barcodes" style="visibility:hidden">${barcodes}</div>
-                <div class="label-info-gap"></div>
-                ${info}
-            </div>`;
+    static printMatch(matchKey) {
+        Printing.run(MatchOrder.buildPrintPairs(Printing.selectedParticipants(), Matches.all(), matchKey));
     }
 
-    static labels(target) {
+    static printAll() {
+        Printing.run(MatchOrder.buildPrintPairs(Printing.selectedParticipants(), Matches.all(), null));
+    }
+
+    static participant(rowEl) {
+        const participant = Participants.readRow(rowEl);
+        if (!participant.paid) { alert(Translations.t('msg.paymentRequired')); return; }
+        Printing.run(MatchOrder.buildPrintPairs([participant], Matches.all(), null));
+    }
+
+    // Only confirmed (paid) participants print; unpaid ones are skipped silently.
+    static selectedParticipants() {
+        return Selection.getToolbarTargets().map(Participants.readRow).filter(participant => participant.paid);
+    }
+
+    static printToken = 0;
+
+    static async run(pairs) {
+        if (!pairs.length) { alert(Translations.t('msg.nothingToPrint')); return; }
+
+        const token = ++Printing.printToken;
+        const resolveScorecard = Scorecards.resolver();
+        const backdrops = await Scorecards.rasterizeBackdrops(pairs, resolveScorecard);
+        if (token !== Printing.printToken) return; // superseded by a newer print request
+
         const container = $('print-container');
         container.innerHTML = '';
-
-        const rows = (target instanceof HTMLElement) ? [target] : Selection.getToolbarTargets();
-        if (!rows.length) return;
-
-        const eventName = Settings.get('eventName');
-        const logoUrl   = Settings.getRaw('eventLogo') || '';
-        const logoHtml  = logoUrl
-            ? `<div class="label-logo"><img src="${Escape.escapeHtml(logoUrl)}" class="label-logo-img"></div>`
-            : '';
-        const programCode = Barcodes.programCode();
-        const programImg  = programCode ? Barcodes.render(programCode) : null;
-
-        rows.forEach(row => {
-            const participant    = Participants.readRow(row);
-            const code           = Barcodes.participantCode(participant.license.trim());
-            const participantImg = code ? Barcodes.render(code) : null;
-
-            const labelEl = document.createElement('div');
-            labelEl.className = 'label';
-            labelEl.innerHTML = Printing.buildLabelHtml({ participant, programImg, participantImg, eventName, logoHtml });
-            container.appendChild(labelEl);
+        pairs.forEach(({ participant, match }) => {
+            const scorecard = resolveScorecard(match);
+            if (!scorecard) return;
+            container.appendChild(Scorecards.buildSheet(scorecard, participant, match, backdrops.get(scorecard.key)));
         });
 
-        setTimeout(() => window.print(), 250);
+        await Printing.imagesReady(container);
+        if (token !== Printing.printToken) return;
+        window.print();
+    }
+
+    static imagesReady(container) {
+        const images = [...container.querySelectorAll('img')];
+        return Promise.all(images.map(image => image.complete
+            ? Promise.resolve()
+            : new Promise(resolve => {
+                image.addEventListener('load', resolve, { once: true });
+                image.addEventListener('error', resolve, { once: true });
+            })));
     }
 }
 
@@ -836,8 +1635,8 @@ class Printing {
 class Backup {
     // Bump the major part when the shape changes incompatibly,
     // the minor part when fields are added in a backward-compatible way.
-    static SETTINGS_VERSION     = '1.0';
-    static PARTICIPANTS_VERSION = '1.0';
+    static SETTINGS_VERSION     = '2.0';
+    static PARTICIPANTS_VERSION = '2.0';
 
     static majorOf(value) {
         return parseInt(String(value || '0').split('.')[0], 10) || 0;
@@ -1264,13 +2063,25 @@ class App {
         select.addEventListener('change', () => Translations.set(select.value));
     }
 
+    static configurePdfWorker() {
+        if (typeof pdfjsLib !== 'undefined') {
+            pdfjsLib.GlobalWorkerOptions.workerSrc = 'src/vendor/pdf.worker.min.js';
+        }
+    }
+
     static init() {
         Migrations.run();
         Translations.apply();
+        App.configurePdfWorker();
+        Scorecards.seedIfEmpty();
+        Matches.seedIfEmpty();
         Settings.load();
         Participants.applyColumnVisibility();
         App.populateLanguageSelector();
         Logo.updatePreview();
+        Matches.renderSettings();
+        Scorecards.renderSettings();
+        Toolbar.renderPrintGroup();
 
         Participants.loadStored().forEach(Participants.addRow);
         Participants.addRow(); // trailing empty row
@@ -1289,7 +2100,7 @@ document.addEventListener('keydown', (e) => {
         const tr = document.activeElement?.closest?.('#participants-tbody tr');
         if (tr && !tr.classList.contains('empty-row')) {
             e.preventDefault();
-            Printing.labels(tr);
+            Printing.participant(tr);
         }
     }
 });
@@ -1299,6 +2110,6 @@ document.addEventListener('DOMContentLoaded', App.init);
 
 // Expose classes for inline HTML handlers (onclick / oninput / onchange).
 Object.assign(window, {
-    Translations, Settings, Logo, Tabs, Categories, Barcodes,
+    Translations, Settings, Logo, Tabs, Categories, Barcodes, Matches, Scorecards,
     Participants, Selection, Filter, Toolbar, CsvIO, Backup, Printing, Updates, LicenseDb,
 });

@@ -33,12 +33,13 @@ Built as a single-page PWA with no build step and no external runtime dependenci
   - Excel-compatible copy to clipboard
   - Backup export/import (JSON, full state)
   - Optional SSV licence-roster lookup: import once, then licence numbers auto-fill last name, first name, year of birth (stored in IndexedDB, never bundled into event exports)
-- **Score Sheet Printing**
-  - Sheet per participant, two columns per sheet
-  - Two Code128 barcodes per label (participant licence + event programme), each with a `mod-97` checksum
-  - Optional event logo and event name printed on every label
-  - `Ctrl/Cmd+P` while focused in a row prints just that row's sheet
-  - Black & white friendly: no colour in print or category indicators
+- **Matches & score-sheet printing**
+  - Up to five configurable matches ("Stiche"); each participant registers for the matches they've entered, toggled per row
+  - One printed sheet per registered (participant × match); a Code128 participant barcode and match barcode, each with a `mod-97` checksum
+  - Configurable **scorecards** (print templates): place participant/match barcodes, participant name, match title, event name and logo in millimetres, over an optional PDF backdrop (created in Word, exported to PDF, ≤1 MB); prints on white when no PDF is set
+  - Optional paired copy of each field at a horizontal/vertical offset (for split, tear-off paper)
+  - Toolbar prints per match or all matches (grouped by participant) for the selection; `Ctrl/Cmd+P` prints the focused participant's registered matches
+  - Black & white friendly: no colour in category indicators
 - **i18n**: German (default) and French, switchable at runtime
 - **PWA**: installable, fully offline after first load (service worker caches all assets)
 
@@ -57,7 +58,7 @@ Two Code128 barcodes per label, both with a `mod-97` (`-3n mod 97`) checksum:
 | Barcode | Composition |
 |---|---|
 | Participant | `participantPrefix` + licence number padded to 6 digits + checksum |
-| Programme  | `programPrefix` (2) + `programBilling` (3) + `programHits` (3) + checksum |
+| Match | `codePrefix` (2) + `matchCode` (3) + `targetCode` (3) + checksum |
 
 ## File layout
 
@@ -66,9 +67,10 @@ Two Code128 barcodes per label, both with a `mod-97` (`-3n mod 97`) checksum:
 | `index.html` | Markup only; UI structure and `data-i18n` hooks |
 | `styles.css` | All styling, including the print stylesheet for the label sheets |
 | `src/app.js` | Application logic (translations, settings, table, barcode, print, CSV, backup, update prompt) |
-| `src/core/*.js` | Pure-logic modules, imported into `app.js` as namespaces (`Escape`, `I18n`, `Ages`, `BarcodeCodec`, `Csv`, `Licenses`, `UpdateTime`) |
+| `src/core/*.js` | Pure-logic modules, imported into `app.js` as namespaces (`Escape`, `I18n`, `Ages`, `BarcodeCodec`, `Csv`, `Licenses`, `UpdateTime`, `Ids`, `MatchOrder`, `ScorecardLayout`) |
 | `src/tests/*.test.js` | Node test suite, one file per `src/core/*.js` module |
 | `src/vendor/JsBarcode.all.min.js` | Vendored barcode library (no CDN needed) |
+| `src/vendor/pdf.min.js`, `pdf.worker.min.js` | Vendored pdf.js (rasterizes the optional PDF scorecard backdrop); pinned in `package.json`, copied by `npm run vendor` |
 | `sw.js` | Service worker — offline cache + `SKIP_WAITING` handler (bump `CACHE_NAME` to ship a new version). Stays at repo root so its scope covers the whole site. |
 | `manifest.webmanifest` | PWA manifest |
 | `icon.svg` | App icon |
@@ -79,8 +81,8 @@ Three top-level `localStorage` keys, each a JSON-encoded versioned wrapper:
 
 | Key | Shape |
 |---|---|
-| `settings`     | `{ version, data: { eventName, eventLogo, participantPrefix, programPrefix, rankingCode, targetCode, licenseEnabled, customColumn1Name, customColumn2Name } }` |
-| `participants` | `{ version, items: [ {license, lastName, firstName, yearOfBirth, custom1, custom2}, ... ] }` |
+| `settings`     | `{ version, data: { eventName, eventLogo, participantPrefix, licenseEnabled, customColumn1Name, customColumn2Name, matches: [...], scorecards: [...] } }` |
+| `participants` | `{ version, items: [ {license, lastName, firstName, yearOfBirth, custom1, custom2, registeredMatches: [matchKey, ...]}, ... ] }` |
 | `userSettings` | `{ language, updateDeferUntil }` — local user preferences, **not** part of an event export |
 
 The exported `.openrangeoffice` file mirrors `settings` + `participants` exactly. Section versions are `Major.Minor`; an incompatible major aborts the import (a registry-based migration framework is in place for future major bumps).

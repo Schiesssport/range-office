@@ -10,7 +10,7 @@ These are non-negotiable. They override any other guidance in this document.
 
 ## What OpenRangeOffice does
 
-OpenRangeOffice is a small offline-first PWA for managing participants and printing barcoded score sheets ("Standblätter") at Swiss shooting events. Single-page, no build step, no runtime dependencies beyond the vendored `JsBarcode.all.min.js`. UI is German or French. All state lives in `localStorage`. See `README.md` for full details.
+OpenRangeOffice is a small offline-first PWA for managing participants and printing barcoded score sheets ("Standblätter") at Swiss shooting events. Single-page, no build step; the only runtime dependencies are the vendored `JsBarcode.all.min.js` and `pdf.min.js` (+ its worker, used to rasterize an optional PDF scorecard backdrop). UI is German or French. All state lives in `localStorage`. See `README.md` for full details.
 
 ## Code philosophy
 
@@ -29,9 +29,9 @@ Two-layer split, deliberately strict. All app code lives under `src/`; only `sw.
 
 | Layer | File(s) | Allowed to touch |
 |---|---|---|
-| Pure logic | `src/core/*.js` (one file per topic: `escape`, `translations`, `categories`, `barcodes`, `csv`, `licenses`, `updates`) | Plain JS only — no DOM, no `localStorage`, no `window`, no `document`. Exported as ES modules (named function/const exports). |
-| App layer | `src/app.js` | DOM, `localStorage`, `IndexedDB`, `JsBarcode`. Imports each core module as a namespace (`import * as Escape from './core/escape.js'`, etc.) and calls `Escape.escapeHtml(...)`, `I18n.translate(...)`, `Ages.getCategory(...)`, `BarcodeCodec.buildProgramCode(...)`, `Csv.parseCsv(...)`, `Licenses.normalizeLicense(...)`, `UpdateTime.computeDeferUntil(...)`. Organised as `class` modules with static methods: `Migrations`, `UserSettings`, `Translations`, `Settings`, `Logo`, `Tabs`, `Categories`, `Barcodes`, `Participants`, `Selection`, `Filter`, `Toolbar`, `CsvIO`, `Printing`, `Backup`, `LicenseDb`, `Updates`, `App`. |
-| Vendor | `src/vendor/JsBarcode.all.min.js` | Pinned third-party libraries. Loaded as a classic `<script>` from `index.html` so it sets `window.JsBarcode` for `app.js` to use. |
+| Pure logic | `src/core/*.js` (one file per topic: `escape`, `translations`, `categories`, `barcodes`, `csv`, `licenses`, `updates`, `ids`, `matches`, `scorecards`) | Plain JS only — no DOM, no `localStorage`, no `window`, no `document`, no `Date.now`/`Math.random` (time and randomness are passed in, e.g. `Ids.uuid7(nowMs, randomBytes)`). Exported as ES modules (named function/const exports). |
+| App layer | `src/app.js` | DOM, `localStorage`, `IndexedDB`, `JsBarcode`, `pdfjsLib`. Imports each core module as a namespace (`import * as Escape from './core/escape.js'`, etc.) and calls `Escape.escapeHtml(...)`, `BarcodeCodec.buildMatchCode(...)`, `Ids.uuid7(...)`, `MatchOrder.buildPrintPairs(...)`, `ScorecardLayout.fieldPlacements(...)`, etc. Organised as `class` modules with static methods: `Migrations`, `UserSettings`, `Translations`, `Settings`, `Logo`, `Tabs`, `Categories`, `Barcodes`, `Matches`, `Scorecards`, `Participants`, `Selection`, `Filter`, `Toolbar`, `CsvIO`, `Printing`, `Backup`, `LicenseDb`, `Updates`, `App`. |
+| Vendor | `src/vendor/JsBarcode.all.min.js`, `src/vendor/pdf.min.js`, `src/vendor/pdf.worker.min.js` | Pinned third-party libraries loaded as classic `<script>`s (set `window.JsBarcode` / `window.pdfjsLib`). pdf.js is a `devDependency` in `package.json`; `npm run vendor` copies the pinned build from `node_modules` into `src/vendor/`. |
 | Service worker | `sw.js` (at repo root) | Standalone offline cache + `SKIP_WAITING` message handler. Lives at the root so its scope covers `/`. `app.js` registers it and drives the user-facing update prompt via the `Updates` class. When you add or rename a file the app fetches, update the `ASSETS` array in `sw.js` and bump `CACHE_NAME`. |
 
 Anything that can be tested without a browser belongs in `src/core/`. Tests live in `src/tests/<module>.test.js` and import the matching `../core/<module>.js` directly with named imports, so a failure points at the actual file.
@@ -44,7 +44,7 @@ The HTML uses inline `onclick="Module.method()"` handlers wired to those classes
 
 When adding columns, settings, or translations, extend the existing schema rather than scattering new lookups:
 
-- **Participant columns** → `Participants.FIELDS` in `src/app.js`. One entry covers: storage key, CSS class, type, placeholder key (or literal placeholder), header key (or dynamic `getHeader`), optional `col` data attribute, optional visibility predicate. Row HTML, CSV export, CSV import, column visibility, and `refreshDynamicTexts` all derive from it. CSV import is positional: the file's columns must line up with `Participants.visibleColumns()` (same shape as the export), and the first row is treated as a header and skipped.
+- **Participant columns** → `Participants.FIELDS` in `src/app.js`. One entry covers: storage key, CSS class, type, placeholder key (or literal placeholder), header key (or dynamic `getHeader`), optional `col` data attribute, optional visibility predicate. Row HTML, CSV export, CSV import, column visibility, and `refreshDynamicTexts` all derive from it. CSV import/export map columns by **header name** — each field by its localized header (`Participants.fieldHeader`), plus one `match_<matchCode>` column per match carrying registrations — so an import stays correct even if the visible columns changed since export; unknown headers are ignored. On update, fields/registrations absent from the file are preserved (`writeRow` skips `undefined` keys).
 - **Settings fields** → `Settings.BINDINGS`. One entry covers storage key, element id, type (`text` | `checkbox`), default value. Load/save/get all use it.
 - **Translations** → `TRANSLATIONS` in `src/core/translations.js` (`de` and `fr` dictionaries). Use `data-i18n="key"` and `data-i18n-placeholder="key"` in HTML. For dynamic text in JS, call `Translations.t('key', { params })`. `{name}` style placeholders are substituted by `translate()`.
 - **Backup format versions** → `Backup.SETTINGS_VERSION`, `Backup.PARTICIPANTS_VERSION` (both `Major.Minor`). Bump the major when the shape changes incompatibly; bump the minor for additive changes.
@@ -66,8 +66,8 @@ Imported `.openrangeoffice` files are version-checked per section. Mismatched ma
 
 `localStorage` mirrors the export envelope so the two are interchangeable. Three top-level keys, each a JSON-encoded string:
 
-- `settings` — `{ version: "1.0", data: { eventName, participantPrefix, programPrefix, rankingCode, targetCode, licenseEnabled, customColumn1Name, customColumn2Name, eventLogo } }`
-- `participants` — `{ version: "1.0", items: [ {license, lastName, firstName, yearOfBirth, custom1, custom2}, ... ] }`
+- `settings` — `{ version: "2.0", data: { eventName, participantPrefix, licenseEnabled, customColumn1Name, customColumn2Name, eventLogo, matches: [...], scorecards: [...] } }`. `matches`/`scorecards` are variable-length arrays managed by the `Matches`/`Scorecards` classes via `Settings.getRaw`/`setRaw` (they do **not** fit the flat `Settings.BINDINGS` schema). A match is `{ key (uuid7), label (≤2 chars), title, codePrefix, matchCode, targetCode, scorecardKey }`; a scorecard is `{ key, name, pdfDataUrl, pageWidthMm, pageHeightMm, fields }` where each field is `{ enabled, fromLeftMm, fromTopMm, widthMm, heightMm, fontPt?, pair: { enabled, horizontalOffsetMm, verticalOffsetMm } }`. At least one match and one scorecard always exist.
+- `participants` — `{ version: "2.0", items: [ {license, lastName, firstName, yearOfBirth, custom1, custom2, registeredMatches: [matchKey, ...]}, ... ] }`
 - `userSettings` — `{ language: "de", updateDeferUntil: 0 }` — local-only user prefs, **not** exported (free-form bag, extend via `UserSettings.patch`)
 
 The optional **SSV license roster** lives in IndexedDB (`openrangeoffice-licenses` / store `licenses`, keyed by `normalizeLicense(...)` from `src/core/licenses.js`) — deliberately *outside* the event envelope so a 10MB roster never bloats `.openrangeoffice` exports. Managed entirely by the `LicenseDb` class; `Backup.clearAll` does not touch it.
@@ -76,8 +76,8 @@ The exported `.openrangeoffice` envelope is just the first two:
 
 ```jsonc
 {
-  "settings":     { "version": "1.0", "data":  { ...flat keys, "eventLogo": "data:image/..." } },
-  "participants": { "version": "1.0", "items": [...] }
+  "settings":     { "version": "2.0", "data":  { ...flat keys, "matches": [...], "scorecards": [...] } },
+  "participants": { "version": "2.0", "items": [...] }
 }
 ```
 

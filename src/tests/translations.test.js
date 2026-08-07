@@ -15,5 +15,5 @@ test('translate substitutes named placeholders', () => {
 });
 
 test('translate uses the requested dictionary', () => {
-    assert.equal(translate(TRANSLATIONS.fr, 'btn.print'), 'Imprimer');
+    assert.equal(translate(TRANSLATIONS.fr, 'btn.printAll'), 'Tous');
 });

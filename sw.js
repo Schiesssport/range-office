@@ -38,7 +38,12 @@ const ASSETS = [
     'src/core/csv.js',
     'src/core/licenses.js',
     'src/core/updates.js',
+    'src/core/ids.js',
+    'src/core/matches.js',
+    'src/core/scorecards.js',
     'src/vendor/JsBarcode.all.min.js',
+    'src/vendor/pdf.min.js',
+    'src/vendor/pdf.worker.min.js',
 ];
 
 self.addEventListener('install', (event) => {
